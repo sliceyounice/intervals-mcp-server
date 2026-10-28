@@ -183,3 +183,7 @@ TODO
 .claude/
 .DS_Store
 CLAUDE.md
+
+# Hosted-mode auth database
+*.sqlite3
+*.sqlite3-*

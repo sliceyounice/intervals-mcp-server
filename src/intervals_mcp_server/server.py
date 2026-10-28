@@ -50,11 +50,12 @@ from intervals_mcp_server.api.client import (
     httpx_client,  # Re-export for backward compatibility with tests
     make_intervals_request,
 )
-from intervals_mcp_server.config import get_config
+from intervals_mcp_server.config import AUTH_MODE_HOSTED, get_config
 from intervals_mcp_server.mcp_instance import mcp
 
 # Import types and validation
 from intervals_mcp_server.server_setup import setup_transport, start_server
+from intervals_mcp_server.utils.types import TransportAliases
 from intervals_mcp_server.utils.validation import validate_athlete_id
 
 # Configure logging
@@ -112,6 +113,7 @@ __all__ = [
     "delete_event",
     "delete_events_by_date_range",
     "add_or_update_event",
+    "get_gear_list",
     "get_wellness_data",
     "get_athlete_power_curves",
     "get_custom_items",
@@ -124,9 +126,15 @@ __all__ = [
 
 # Run the server
 if __name__ == "__main__":
-    # Validate ATHLETE_ID when server starts (not at import time to allow tests)
-    validate_athlete_id(config.athlete_id)
+    if config.auth_mode == AUTH_MODE_HOSTED:
+        # Hosted mode serves many users over HTTP; each signs in through the login page.
+        selected_transport = setup_transport()
+        if selected_transport != TransportAliases.STREAMABLE_HTTP:
+            raise ValueError("AUTH_MODE=hosted requires MCP_TRANSPORT=http (streamable HTTP).")
+        logger.info("Hosted mode: MCP endpoint is %s/mcp", config.public_base_url)
+    else:
+        # Validate ATHLETE_ID when server starts (not at import time to allow tests)
+        validate_athlete_id(config.athlete_id)
+        selected_transport = setup_transport()
 
-    # Setup transport and start server
-    selected_transport = setup_transport()
     start_server(mcp, selected_transport)

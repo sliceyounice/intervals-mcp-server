@@ -1,0 +1,59 @@
+# Hosted (multi-user) deployment: the MCP server behind Caddy with automatic HTTPS.
+#
+#   cp .env.example .env    # set PUBLIC_HOST and TOKEN_ENCRYPTION_KEY
+#   docker compose up -d --build
+#
+# MCP clients connect to https://<PUBLIC_HOST>/mcp
+
+# Docker's default json-file driver never rotates logs.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  app:
+    build:
+      context: ..
+    command: ["python", "-m", "intervals_mcp_server.server"]
+    environment:
+      AUTH_MODE: hosted
+      MCP_TRANSPORT: http
+      FASTMCP_HOST: 0.0.0.0
+      FASTMCP_PORT: "8000"
+      PUBLIC_BASE_URL: https://${PUBLIC_HOST:?Set PUBLIC_HOST in deploy/.env}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:?Set TOKEN_ENCRYPTION_KEY in deploy/.env}
+      DB_PATH: /data/intervals-mcp.sqlite3
+      INTERVALS_API_BASE_URL: ${INTERVALS_API_BASE_URL:-https://intervals.icu/api/v1}
+    volumes:
+      - app_data:/data
+    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  caddy:
+    image: caddy:2.8
+    depends_on:
+      - app
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  app_data:
+  caddy_data:
+  caddy_config:

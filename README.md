@@ -289,6 +289,53 @@ ChatGPT’s beta MCP connectors can also talk to this server over the SSE transp
 
 3. Save the connector and open a new chat. ChatGPT will keep the SSE connection open and POST follow-up requests to the `/messages/` endpoint announced by the server. If you restart the MCP server or tunnel, rerun the SSE command and update the connector URL if it changes.
 
+## Hosting for multiple users
+
+By default the server runs locally for one person, using the `API_KEY` and `ATHLETE_ID` from `.env`. In **hosted mode** (`AUTH_MODE=hosted`) one deployment serves many people over HTTPS. Each user signs in once with their own Intervals.icu API key and athlete ID, and their tool calls only ever use their own credentials.
+
+How it works:
+
+- The server is an OAuth 2.1 authorization server for MCP clients. Claude.ai, Claude Desktop, ChatGPT and Claude Code discover it automatically from the MCP URL.
+- When a client connects, the user is sent to the server's login page. They enter their athlete ID and API key there, and the server checks them against the Intervals.icu API.
+- API keys are stored encrypted (Fernet) in a SQLite database. Clients only ever receive short-lived access tokens, which refresh automatically.
+- Tools are scoped to the signed-in athlete. Asking for another athlete's data returns an error.
+- If a user regenerates their API key in Intervals.icu, their stored key stops working. The server then asks them to reconnect.
+
+### Deploy with Docker Compose and Caddy
+
+You need a server with Docker and a DNS record (for example `mcp.example.com`) pointing at it. Ports 80 and 443 must be open.
+
+```bash
+git clone https://github.com/mvilanova/intervals-mcp-server.git
+cd intervals-mcp-server/deploy
+cp .env.example .env
+# Edit .env: set PUBLIC_HOST and a TOKEN_ENCRYPTION_KEY generated with
+#   openssl rand -base64 32 | tr '+/' '-_'
+docker compose up -d --build
+```
+
+Caddy obtains the TLS certificate automatically. Check that `https://mcp.example.com/healthz` returns `{"status": "ok"}`. The database lives in the `app_data` volume, so back it up together with `TOKEN_ENCRYPTION_KEY`. If you lose or change the key, every user has to sign in again.
+
+### Connect a client
+
+Use `https://mcp.example.com/mcp` as the server URL:
+
+- **Claude.ai / Claude Desktop:** Settings → Connectors → Add custom connector.
+- **ChatGPT:** add a custom connector as described in [Usage with ChatGPT](#usage-with-chatgpt), with authentication set to OAuth.
+- **Claude Code:** `claude mcp add --transport http intervals https://mcp.example.com/mcp`
+
+The client opens the login page in your browser. Sign in with your athlete ID and API key, and the client is connected.
+
+### Running hosted mode without Docker
+
+```bash
+AUTH_MODE=hosted MCP_TRANSPORT=http PUBLIC_BASE_URL=https://mcp.example.com \
+TOKEN_ENCRYPTION_KEY=<key> DB_PATH=./intervals-mcp.sqlite3 \
+FASTMCP_HOST=127.0.0.1 FASTMCP_PORT=8000 python -m intervals_mcp_server.server
+```
+
+Put a TLS-terminating reverse proxy in front of it. For local testing, `PUBLIC_BASE_URL=http://localhost:8000` is allowed, and you can connect with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector) (`npx @modelcontextprotocol/inspector`).
+
 ## Development and testing
 
 Install development dependencies and run the test suite with:

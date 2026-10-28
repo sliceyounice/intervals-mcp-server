@@ -16,9 +16,15 @@ from typing import Any
 import httpx  # pylint: disable=import-error
 from mcp.server.fastmcp import FastMCP  # pylint: disable=import-error
 
-from intervals_mcp_server.config import get_config
+from intervals_mcp_server.auth.context import current_principal
+from intervals_mcp_server.config import AUTH_MODE_HOSTED, get_config
 
 logger = logging.getLogger("intervals_icu_mcp_server")
+
+HOSTED_UNAUTHORIZED_MESSAGE = (
+    f"{HTTPStatus.UNAUTHORIZED.value} {HTTPStatus.UNAUTHORIZED.phrase}: Intervals.icu rejected the "
+    "stored API key (it may have been regenerated). Reconnect the Intervals.icu connector to sign in again."
+)
 
 # Create a single AsyncClient instance for all requests (lazily initialized)
 # This can be monkeypatched via server.httpx_client for testing
@@ -52,6 +58,11 @@ async def _get_httpx_client() -> httpx.AsyncClient:
     if httpx_client is None or httpx_client.is_closed:
         httpx_client = httpx.AsyncClient()
     return httpx_client
+
+
+async def get_httpx_client() -> httpx.AsyncClient:
+    """Return the shared httpx AsyncClient, creating it if needed."""
+    return await _get_httpx_client()
 
 
 @asynccontextmanager
@@ -116,8 +127,21 @@ def _prepare_request_config(
     if method in ["POST", "PUT"]:
         headers["Content-Type"] = "application/json"
 
-    # Use provided api_key or fall back to global API_KEY
-    key_to_use = api_key if api_key is not None else config.api_key
+    if config.auth_mode == AUTH_MODE_HOSTED:
+        # Each user's own key, never the api_key argument or a server-wide fallback.
+        principal = current_principal()
+        if principal is None:
+            logger.error("No authenticated user for request to: %s", url)
+            return (
+                "",
+                httpx.BasicAuth("", ""),
+                {},
+                "Not authenticated. Reconnect the Intervals.icu connector to sign in again.",
+            )
+        key_to_use = principal.api_key
+    else:
+        # Use provided api_key or fall back to global API_KEY
+        key_to_use = api_key if api_key is not None else config.api_key
     if not key_to_use:
         logger.error("No API key provided for request to: %s", url)
         return (
@@ -140,12 +164,13 @@ def _parse_response(
     Returns:
         Parsed JSON response or error dict.
     """
+    # Check the status first so error responses with non-JSON bodies keep their status code.
+    response.raise_for_status()
     try:
         response_data = response.json() if response.content else {}
     except JSONDecodeError:
         logger.error("Invalid JSON in response from: %s", full_url)
         return {"error": True, "message": "Invalid JSON in response"}
-    response.raise_for_status()
     return response_data
 
 
@@ -214,6 +239,15 @@ async def make_intervals_request(
 
         return _parse_response(response, full_url)
     except httpx.HTTPStatusError as e:
+        if e.response.status_code == HTTPStatus.UNAUTHORIZED and await _revoke_current_grant():
+            logger.error(
+                "HTTP error: %s - stored API key rejected; grant revoked", e.response.status_code
+            )
+            return {
+                "error": True,
+                "status_code": e.response.status_code,
+                "message": HOSTED_UNAUTHORIZED_MESSAGE,
+            }
         return _handle_http_status_error(e)
     except httpx.RequestError as e:
         logger.error("Request error: %s", str(e))
@@ -221,6 +255,26 @@ async def make_intervals_request(
     except httpx.HTTPError as e:
         logger.error("HTTP client error: %s", str(e))
         return {"error": True, "message": f"HTTP client error: {str(e)}"}
+
+
+async def _revoke_current_grant() -> bool:
+    """In hosted mode, revoke the grant whose stored API key was rejected.
+
+    The client's next request then fails authentication and it signs in again.
+
+    Returns:
+        True if a grant was revoked.
+    """
+    if get_config().auth_mode != AUTH_MODE_HOSTED:
+        return False
+    principal = current_principal()
+    if principal is None:
+        return False
+    # Imported lazily: the store pulls in cryptography, which api_key mode doesn't need.
+    from intervals_mcp_server.auth.store import get_store  # pylint: disable=import-outside-toplevel
+
+    await get_store().revoke_grant(principal.grant_id)
+    return True
 
 
 def _handle_http_status_error(e: httpx.HTTPStatusError) -> dict[str, Any]:

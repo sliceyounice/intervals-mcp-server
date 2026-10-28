@@ -7,6 +7,7 @@ This module contains validation functions for input parameters.
 import re
 from datetime import datetime
 
+from intervals_mcp_server.auth.context import current_principal
 from intervals_mcp_server.utils.dates import parse_date_range
 
 
@@ -52,6 +53,9 @@ def resolve_athlete_id(
 ) -> tuple[str, str | None]:
     """Resolve athlete ID from parameter or default, with error message if missing.
 
+    In hosted mode the signed-in user's athlete ID always wins; asking for a different
+    athlete is an error.
+
     Args:
         athlete_id: Optional athlete ID parameter.
         default_athlete_id: Default athlete ID to use if athlete_id is None.
@@ -61,6 +65,15 @@ def resolve_athlete_id(
         athlete_id_to_use will be empty string if not found.
         error_message will be None if athlete_id is resolved successfully.
     """
+    principal = current_principal()
+    if principal is not None:
+        if athlete_id and athlete_id.lstrip("i") != principal.athlete_id.lstrip("i"):
+            return (
+                "",
+                f"Error: You can only access the athlete you signed in with ({principal.athlete_id}).",
+            )
+        return principal.athlete_id, None
+
     athlete_id_to_use = athlete_id if athlete_id is not None else default_athlete_id
     if not athlete_id_to_use:
         return (

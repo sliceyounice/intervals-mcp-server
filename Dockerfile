@@ -10,17 +10,30 @@ RUN apt-get update \
        curl \
     && rm -rf /var/lib/apt/lists/*
 
+# uv exports the locked dependency versions from uv.lock
+COPY --from=ghcr.io/astral-sh/uv:0.11.21 /uv /usr/local/bin/uv
+
 # Install Python build tool
 RUN pip install --no-cache-dir hatchling
 
 # Copy project files
 COPY pyproject.toml pyproject.toml
+COPY uv.lock uv.lock
 COPY src src
 COPY README.md README.md
 COPY .env.example .env.example
 
-# Install the package and runtime dependencies
-RUN pip install --no-cache-dir .
+# Install the exact runtime dependency versions from uv.lock, then the package itself
+RUN uv export --locked --no-dev --no-emit-project -o requirements.txt \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --no-deps .
 
-# Default command to run the MCP server using stdio transport
+# Run as an unprivileged user; /data holds the hosted-mode SQLite database
+RUN useradd --create-home --uid 1000 app \
+    && mkdir -p /data \
+    && chown app:app /data
+USER app
+
+# Default command to run the MCP server using stdio transport.
+# Hosted (multi-user) mode overrides this; see deploy/docker-compose.yml.
 CMD ["mcp", "run", "src/intervals_mcp_server/server.py"]

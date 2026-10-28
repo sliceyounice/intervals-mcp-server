@@ -1,0 +1,5 @@
+{$PUBLIC_HOST} {
+	# Caddy obtains and renews the TLS certificate automatically and flushes
+	# streaming (text/event-stream) responses immediately.
+	reverse_proxy app:8000
+}

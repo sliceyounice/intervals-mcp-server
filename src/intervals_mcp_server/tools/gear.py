@@ -17,9 +17,11 @@ lifetime of the MCP server process and derive the `{id: name}` lookup from it.
 Call `get_gear_list(refresh=True)` to bust the cache.
 """
 
+from collections import OrderedDict
 from typing import Any
 
 from intervals_mcp_server.api.client import make_intervals_request
+from intervals_mcp_server.auth.context import current_principal
 from intervals_mcp_server.config import get_config
 from intervals_mcp_server.utils.validation import resolve_athlete_id
 
@@ -30,7 +32,15 @@ config = get_config()
 
 # Module-level cache of the raw gear catalog per athlete. Single source of
 # truth: the id->name map and the rich listing are both derived from this.
-_GEAR_RAW_CACHE: dict[str, list[dict[str, Any]]] = {}
+# Keyed by (grant, athlete) so hosted-mode users never share entries, and
+# bounded as an LRU so many users can't grow it without limit.
+_GEAR_RAW_CACHE: OrderedDict[tuple[str, str], list[dict[str, Any]]] = OrderedDict()
+_GEAR_CACHE_MAX_ENTRIES = 1000
+
+
+def _cache_key(athlete_id: str) -> tuple[str, str]:
+    principal = current_principal()
+    return (principal.grant_id if principal else "local", athlete_id)
 
 
 def _extract_gear_id(activity: dict[str, Any]) -> str | None:
@@ -90,14 +100,19 @@ async def get_gear_raw(
     if error_msg or not athlete_id_to_use:
         return []
 
-    if not refresh and athlete_id_to_use in _GEAR_RAW_CACHE:
-        return _GEAR_RAW_CACHE[athlete_id_to_use]
+    key = _cache_key(athlete_id_to_use)
+    if not refresh and key in _GEAR_RAW_CACHE:
+        _GEAR_RAW_CACHE.move_to_end(key)
+        return _GEAR_RAW_CACHE[key]
 
     result = await make_intervals_request(
         url=f"/athlete/{athlete_id_to_use}/gear", api_key=api_key
     )
     items = _items_from_response(result)
-    _GEAR_RAW_CACHE[athlete_id_to_use] = items
+    _GEAR_RAW_CACHE[key] = items
+    _GEAR_RAW_CACHE.move_to_end(key)
+    while len(_GEAR_RAW_CACHE) > _GEAR_CACHE_MAX_ENTRIES:
+        _GEAR_RAW_CACHE.popitem(last=False)
     return items
 
 
